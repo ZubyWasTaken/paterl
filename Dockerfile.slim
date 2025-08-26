@@ -1,0 +1,106 @@
+# Multi-stage Dockerfile for optimized paterl + mbcheck image
+# Stage 1: Build stage
+FROM ubuntu:24.04 AS builder
+
+# Install system dependencies including Erlang, OCaml tools, and build essentials
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y opam build-essential git make m4 pkg-config libgmp-dev python3 z3 libz3-4 software-properties-common && \
+    add-apt-repository ppa:rabbitmq/rabbitmq-erlang && \
+    apt-get update && \
+    apt-get install -y erlang && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create developer user and set up working directory
+RUN useradd -m -s /bin/bash developer
+USER developer
+WORKDIR /home/developer
+
+# Initialize opam (OCaml package manager) and install development tools
+RUN opam init -y --disable-sandboxing
+RUN eval $(opam env --switch=default) && \
+    opam install -y ocaml-lsp-server odoc ocamlformat utop
+RUN eval $(opam env --switch=default) && \
+    opam install -y ppx_import visitors z3 bag cmdliner
+
+# Clone and build mbcheck tool (required dependency for paterl)
+RUN mkdir Development
+WORKDIR /home/developer/Development
+RUN eval $(opam env --switch=default) && \
+    git clone https://github.com/SimonJF/mbcheck.git && \
+    cd mbcheck && \
+    git checkout paterl-experiments && \
+    make && \
+    test -f mbcheck || (echo "ERROR: mbcheck binary not found!" && exit 1)
+
+# Clone paterl repository and set up working directory
+RUN git clone https://github.com/duncanatt/paterl.git
+WORKDIR /home/developer/Development/paterl
+
+# Configure paterl to use mbcheck, build the project, and run verification test
+RUN sed -i 's|^-define(EXEC,.*| -define(EXEC, "/home/developer/Development/mbcheck/mbcheck").|' src/paterl.erl && \
+    make && \
+    echo "Testing paterl installation..." && \
+    ./src/paterl src/examples/erlang/codebeam/id_server_demo.erl -v all -I include && \
+    echo "SUCCESS: Paterl test completed!"
+
+# Stage 2: Minimal runtime stage
+FROM ubuntu:24.04 AS runtime
+
+# Install minimal runtime dependencies
+RUN apt-get update && apt-get upgrade -y && \
+    apt-get install -y libgmp-dev python3 z3 libz3-4 software-properties-common && \
+    add-apt-repository ppa:rabbitmq/rabbitmq-erlang && \
+    apt-get update && \
+    apt-get install -y erlang && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install OCaml Z3 bindings for mbcheck
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends opam pkg-config m4 && \
+    useradd -m -s /bin/bash developer && \
+    su developer -c "opam init -y --disable-sandboxing" && \
+    su developer -c "eval \$(opam env --switch=default) && opam install -y --assume-depexts z3 bag cmdliner" && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy compiled binaries and verify setup
+RUN echo "Checking Z3 libraries:" && \
+    find /usr -name "*z3*" -type f 2>/dev/null || true && \
+    ldconfig -p | grep z3 || true && \
+    echo "Creating directory structure:" && \
+    mkdir -p /home/developer/Development
+
+# Copy the compiled binaries from builder stage
+COPY --from=builder /home/developer/Development/mbcheck /home/developer/Development/mbcheck
+COPY --from=builder /home/developer/Development/paterl /home/developer/Development/paterl
+
+# Fix paterl escript to use absolute path for beam files
+RUN sed -i 's|%%! -pa ebin|%%! -pa /home/developer/Development/paterl/ebin|' /home/developer/Development/paterl/src/paterl
+
+# Verify mbcheck binary dependencies are satisfied
+RUN echo "Checking mbcheck dependencies:" && \
+    ldd /home/developer/Development/mbcheck/mbcheck || true
+
+# Setup user environment and workspace
+RUN mkdir -p /workspace
+
+# Configure shell environment with paterl in PATH and helpful aliases
+RUN echo 'export PATH=/home/developer/Development/paterl/src:$PATH' >> /root/.bashrc && \
+    echo 'alias paterl="/home/developer/Development/paterl/src/paterl"' >> /root/.bashrc && \
+    echo 'echo ""' >> /root/.bashrc && \
+    echo 'echo "=== PATERL READY ==="' >> /root/.bashrc && \
+    echo 'echo "Built-in examples (use absolute paths from /workspace):"' >> /root/.bashrc && \
+    echo 'echo "  paterl /home/developer/Development/paterl/src/examples/erlang/codebeam/id_server_demo.erl -v all -I /home/developer/Development/paterl/include"' >> /root/.bashrc && \
+    echo 'echo "  OR change to paterl dir: cd /home/developer/Development/paterl"' >> /root/.bashrc && \
+    echo 'echo ""' >> /root/.bashrc && \
+    echo 'echo "=== VOLUME MOUNT USAGE ==="' >> /root/.bashrc && \
+    echo 'echo "Mount your .erl files:"' >> /root/.bashrc && \
+    echo 'echo "  docker run -it -v ~/my_erlang:/workspace paterl:slim"' >> /root/.bashrc && \
+    echo 'echo "  docker run -it -v \$(pwd):/workspace paterl:slim"' >> /root/.bashrc && \
+    echo 'echo ""' >> /root/.bashrc && \
+    echo 'echo "Then inside container:"' >> /root/.bashrc && \
+    echo 'echo "  paterl /workspace/your_file.erl -v all -I include"' >> /root/.bashrc && \
+    echo 'echo ""' >> /root/.bashrc
+
+# Start container with bash shell
+WORKDIR /workspace
+ENTRYPOINT ["bash"]
