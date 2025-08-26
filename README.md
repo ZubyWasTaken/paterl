@@ -29,6 +29,54 @@ paterl:compile("src/examples/erlang/codebeam/id_server_demo.erl", [{includes, ["
 ./src/paterl src/examples/erlang/codebeam/id_server_demo.erl -v all -I include
 ```
 
+## Using in Docker
+
+You can run `paterl` inside a Docker container, either by **building the image locally** or by **pulling a prebuilt image**.
+
+### Option 1: Build locally
+
+Clone the repository and build the Docker image:
+
+```bash
+git clone https://github.com/duncanatt/paterl.git
+cd paterl
+docker build -t paterl:slim .
+```
+
+Run the container interactively with a mounted workspace:
+
+```bash
+docker run -it -v $(pwd):/workspace paterl:slim bash
+```
+
+Inside the container, you can run:
+
+```bash
+paterl /workspace/src/examples/erlang/codebeam/id_server_demo.erl -v all -I include
+```
+
+---
+
+### Option 2: Pull prebuilt image
+
+If you don’t want to build locally, you can pull the prebuilt image:
+
+```bash
+docker pull zubywastaken/paterl:slim
+```
+
+Run it with your Erlang project mounted into `/workspace`:
+
+```bash
+docker run -it -v $(pwd):/workspace zubywastaken/paterl:slim bash
+```
+
+Then, inside the container:
+
+```bash
+paterl /workspace/src/examples/erlang/codebeam/id_server_demo.erl -v all -I include
+```
+
 ---
 
 # Installing the `paterl` toolchain
